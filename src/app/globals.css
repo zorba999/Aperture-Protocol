@@ -89,6 +89,12 @@ select {
   line-height: 0.86;
   letter-spacing: -0.02em;
   margin: 0;
+  /* Windows DirectWrite paints large light-on-dark text with subpixel LCD
+     antialiasing, which leaves red and cyan fringes on the glyph edges.
+     -webkit-font-smoothing does nothing here, but pinning the heading to its
+     own compositing layer makes Chrome fall back to grayscale antialiasing.
+     Display sizes only: small body copy really is sharper with subpixel AA. */
+  transform: translateZ(0);
 }
 
 .display em {
@@ -182,7 +188,10 @@ select {
   z-index: 9998;
   pointer-events: none;
   opacity: 0.038;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  /* feTurbulence generates R, G and B independently, so the raw noise is
+     coloured. Screened over antialiased glyph edges that reads as chromatic
+     fringing. feColorMatrix desaturates it back to real film grain. */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   animation: grain 0.7s steps(2) infinite;
   mix-blend-mode: screen;
 }
@@ -487,14 +496,22 @@ select {
   transform: none;
 }
 
+/* The display face needs about 0.95em of ink but line-height is 0.86em, so a
+   bare overflow:hidden window shears the tops of ascenders and the tails of
+   descenders. Padding widens the clipping window, the matching negative margin
+   keeps the visual leading exactly where it was. */
 .mask-line {
   overflow: hidden;
   display: block;
+  padding-block: 0.12em;
+  margin-block: -0.12em;
 }
 
+/* 105% cleared the old window. The padded one is 0.24em taller, so the start
+   offset has to clear 114% or the incoming line peeks along the bottom edge. */
 .mask-line > span {
   display: block;
-  transform: translateY(105%);
+  transform: translateY(125%);
   transition: transform 1.15s var(--ease);
 }
 
