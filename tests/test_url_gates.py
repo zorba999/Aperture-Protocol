@@ -34,6 +34,9 @@ def load_pure_helpers():
 H = load_pure_helpers()
 normalise = H["_normalise_url"]
 match_prefix = H["_match_prefix"]
+image_sources = H["_image_sources"]
+absolute = H["_absolute"]
+strip_tags = H["_strip_tags"]
 
 FAILURES = []
 
@@ -93,6 +96,37 @@ check(
     match_prefix("https://youtube.com/@nike/videos", ["youtube.com", "youtube.com/@nike"]),
     "youtube.com/@nike",
 )
+
+
+# ---------------------------------------------------------------------------
+# The media gate. It runs on bytes, not on a model's opinion of a screenshot,
+# so the scraping in front of it has to be exactly right.
+# ---------------------------------------------------------------------------
+
+check("no media on the page means nothing to hash", image_sources("<p>Katla Caldera, Descent</p>", 3), [])
+check("plain img found", image_sources('<img src="/frames/k.jpg">', 3), ["/frames/k.jpg"])
+check("single quotes", image_sources("<img src='/a.jpg'>", 3), ["/a.jpg"])
+check("attributes before src", image_sources('<img class="hero" alt="x" src="/a.jpg">', 3), ["/a.jpg"])
+check("video poster counts", image_sources('<video poster="/p.jpg"></video>', 3), ["/p.jpg"])
+check(
+    "document order, deduplicated, capped",
+    image_sources('<img src="/a.jpg"><img src="/b.jpg"><img src="/a.jpg"><img src="/c.jpg">', 2),
+    ["/a.jpg", "/b.jpg"],
+)
+# An inline data URI can be anything the page author wants, so it is not
+# evidence of anything and is skipped rather than fetched.
+check("data uris skipped", image_sources('<img src="data:image/png;base64,AAAA">', 3), [])
+
+check("absolute passes through", absolute("https://cdn.example/a.jpg", "https://site/x/y.html"), "https://cdn.example/a.jpg")
+check("root relative", absolute("/frames/k.jpg", "https://site.com/x/y.html"), "https://site.com/frames/k.jpg")
+check("path relative", absolute("k.jpg", "https://site.com/x/y.html"), "https://site.com/x/k.jpg")
+check("protocol relative", absolute("//cdn.net/k.jpg", "https://site.com/x/y.html"), "https://cdn.net/k.jpg")
+check("root page relative", absolute("k.jpg", "https://site.com"), "https://site.com/k.jpg")
+
+check("tags stripped", strip_tags("<p>hello <b>world</b></p>"), "hello world")
+check("scripts dropped whole", strip_tags("<p>a</p><script>var x = '<b>no</b>';</script><p>b</p>"), "a b")
+check("styles dropped whole", strip_tags("<style>p{color:red}</style><p>a</p>"), "a")
+check("comments dropped", strip_tags("<!-- secret --><p>a</p>"), "a")
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +211,7 @@ check(
 
 # ---------------------------------------------------------------------------
 
-total = 26
+total = 45
 if FAILURES:
     print(f"\n  {len(FAILURES)} of {total} checks FAILED\n")
     for f in FAILURES:

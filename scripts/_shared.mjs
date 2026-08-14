@@ -90,11 +90,40 @@ export async function settle(client, hash, label) {
 }
 
 /**
+ * Time allocation for calls that do real work inside a non-deterministic block.
+ *
+ * The default preset assumes something cheap. An audit loads an image, drives a
+ * headless browser over the reported page and then runs a vision prompt, and
+ * every validator repeats all of it. On the default budget that returned
+ * VALIDATORS_TIMEOUT rather than a verdict, which looks like a broken contract
+ * and is really just a transaction that was not given enough room.
+ */
+export const HEAVY_METHODS = new Set(["file_claim", "contest_claim", "request_quote"]);
+
+export async function heavyFees(client) {
+  try {
+    const estimate = await client.estimateTransactionFees({
+      leaderTimeunitsAllocation: 2000n,
+      validatorTimeunitsAllocation: 4000n,
+      rotations: [0n],
+    });
+    return { distribution: estimate.distribution, feeValue: estimate.feeValue };
+  } catch (err) {
+    console.log(`  fee estimate unavailable, using defaults (${String(err.message).slice(0, 80)})`);
+    return null;
+  }
+}
+
+/**
  * The consensus contract occasionally reverts the outer EVM transaction when
  * several writes are submitted back to back (tight gas estimate plus a moving
  * nonce). Retrying with a short backoff clears it.
  */
 export async function sendWrite(client, params, label, attempts = 3) {
+  if (HEAVY_METHODS.has(params.functionName) && !params.fees) {
+    const fees = await heavyFees(client);
+    if (fees) params = { ...params, fees };
+  }
   let lastError;
   for (let i = 0; i < attempts; i += 1) {
     try {

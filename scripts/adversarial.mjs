@@ -59,6 +59,26 @@ async function expectRevert(name, params, expect) {
   }
 }
 
+/**
+ * File one claim and hand back what the contract wrote. A transaction that
+ * stalls in consensus is reported as a failed check rather than aborting the
+ * run, otherwise one slow verdict hides every result after it.
+ */
+async function fileAndRead(label, evidenceUrl) {
+  const before = (await read("list_claims")).length;
+  try {
+    await sendWrite(
+      client,
+      { address, functionName: "file_claim", args: [licence.id, evidenceUrl], value: bond },
+      `file_claim (${label})`,
+      1,
+    );
+  } catch (err) {
+    console.log(`        submission problem: ${String(err.message).slice(0, 150)}`);
+  }
+  return waitForClaim(before);
+}
+
 async function waitForClaim(before) {
   for (let i = 0; i < 40; i += 1) {
     const list = await read("list_claims");
@@ -169,13 +189,7 @@ console.log("");
 // ---------------------------------------------------------------------------
 
 console.log("  attack 1: a page the reporter wrote, naming the clip, showing nothing");
-let before = (await read("list_claims")).length;
-await sendWrite(
-  client,
-  { address, functionName: "file_claim", args: [licence.id, FIXTURE.textOnly], value: bond },
-  "file_claim (text only)",
-);
-let claim = await waitForClaim(before);
+let claim = await fileAndRead("text only", FIXTURE.textOnly);
 if (!claim) {
   record("text only page cannot breach a licence", false, "no claim was written");
 } else {
@@ -191,13 +205,7 @@ if (!claim) {
 console.log("");
 
 console.log("  attack 2: the real footage, published by someone with no licence");
-before = (await read("list_claims")).length;
-await sendWrite(
-  client,
-  { address, functionName: "file_claim", args: [licence.id, FIXTURE.thirdParty], value: bond },
-  "file_claim (third party)",
-);
-claim = await waitForClaim(before);
+claim = await fileAndRead("third party", FIXTURE.thirdParty);
 if (!claim) {
   record("third party page cannot breach this holder", false, "no claim was written");
 } else {
@@ -213,13 +221,7 @@ if (!claim) {
 console.log("");
 
 console.log("  case 3: the holder's own declared page, showing a broadcast usage");
-before = (await read("list_claims")).length;
-await sendWrite(
-  client,
-  { address, functionName: "file_claim", args: [licence.id, FIXTURE.holder], value: bond },
-  "file_claim (declared)",
-);
-claim = await waitForClaim(before);
+claim = await fileAndRead("declared", FIXTURE.holder);
 let liveClaim = null;
 if (!claim) {
   record("a genuine escalation is recorded", false, "no claim was written");

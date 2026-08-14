@@ -9,7 +9,7 @@ After the licence is issued, anyone can submit a URL as evidence of a usage beyo
 tier, and the contract judges it and assesses the shortfall.
 
 ```
-0xb523dCaCd5b83c7d674973f63743618Ff8312529   Testnet Bradbury, chain 4221
+0x11222a05DFDcD6EB68a93B4712d0D9819E890967   Testnet Bradbury, chain 4221
 ```
 
 ---
@@ -56,14 +56,15 @@ the validator **reruns the whole task** and compares decision fields:
 | Method | Compared | Ignored |
 | --- | --- | --- |
 | `request_quote` | tier, sorted modifiers | reasoning prose |
-| `file_claim` | the derived verdict (`WITHIN_SCOPE` / `OUT_OF_SCOPE:<tier>` / `INCONCLUSIVE`) | references, confident and tier taken separately, reasoning prose |
+| `file_claim` | the derived verdict (`NO_MEDIA_MATCH` / `UNATTRIBUTED` / `WITHIN_SCOPE` / `ALLEGED_OUT_OF_SCOPE:<tier>`) | media_match, holder_shown, confident and tier taken separately, reasoning prose |
+| `contest_claim` | the derived outcome (`DISMISS` / `STANDS`) | reasoning prose |
 
-The `file_claim` row is the more interesting one. Comparing `references` and `confident` field by
-field looked stricter and was worse in practice: two validators can disagree on whether an obvious
-non match counts as "confident" while both land on the same `INCONCLUSIVE` outcome, and that
-disagreement rotated the leader indefinitely. The contract only ever acts on the derived verdict,
-so the derived verdict is what validators have to agree on. When the verdict is `OUT_OF_SCOPE` the
-tier is folded into the compared string, because there the exact tier does change the money.
+The `file_claim` row is the more interesting one. Comparing the raw judgments field by field looked
+stricter and was worse in practice: two validators can disagree on whether an obvious non match
+counts as "confident" while both land on the same outcome, and that disagreement rotated the leader
+indefinitely. The contract only ever acts on the derived verdict, so the derived verdict is what
+validators have to agree on. When a claim escalates, the tier is folded into the compared string,
+because there the exact tier does change the money.
 
 Schema-only validation was deliberately avoided. Checking that the leader returned a legal enum
 value proves the leader formatted its answer correctly, not that the answer is right, and it lets
@@ -101,6 +102,76 @@ The contract cannot crawl the internet, and GenLayer contracts do not self trigg
 So the search happens off chain (anyone can spot a violation) and only the **judgment** happens on
 chain. That split is also what makes the incentive work: a spotter has a reason to look.
 
+### The audit cannot be used as a weapon
+
+This is the part that was wrong in the first version and is worth reading closely.
+
+`file_claim` originally read the **text** of a page the reporter chose and acted on it. So anyone
+could write a page saying *"Katla Caldera, Descent, Myrdalsjokull Iceland, used in our national TV
+campaign"*, file it against a stranger's licence, and the contract would mark that licence in
+breach and record a debt. No footage had to be involved. It cost nothing. The protocol's own appeal
+window was no help, because appealing re-runs the same judgment on the same forged page: the input
+was the problem, not the consensus.
+
+A claim now has to pass three gates, and the punitive state is no longer immediate.
+
+| Gate | What it proves | How |
+| --- | --- | --- |
+| media | the registered footage is actually on the page | the contract screenshots the page and compares it against the asset's reference frame with a vision model. Two images, the documented limit |
+| identity | the page is the holder's to answer for | the URL sits under a prefix the holder declared at purchase, **or** the page names the holder as the advertiser |
+| scope | the usage outranks what they paid for | tier comparison, as before |
+
+The identity gate is deliberately **deterministic wherever it can be**. Prefix matching runs in
+plain code on every validator, is path aware, and normalises the URL first, so `youtube.com/@nike`
+does not cover `youtube.com/@adidas`, and `nike.com.evil.example` does not cover `nike.com`. Only
+the fallback ("does this page name the holder") is a model judgment, and it is a yes or no, not a
+free text brand name that validators would then have to agree on spelling.
+
+Passing all three does **not** produce a breach. It produces `ALLEGED_OUT_OF_SCOPE`, moves the
+licence to `DISPUTED`, and opens a response window. The holder can `contest_claim` with evidence of
+their own, which is adjudicated separately. Only `finalize_claim`, after an unanswered window, makes
+the breach real.
+
+Around that:
+
+- **Bond.** `file_claim` is payable. An unfounded claim (`NO_MEDIA_MATCH`) forfeits the bond to the
+  creator. A misdirected but honest one (`UNATTRIBUTED`) gets it back, because reporting real
+  infringement by a third party should not be punished.
+- **Replay.** Evidence URLs are normalised into a key, so `?utm_source=`, `www.`, casing and
+  trailing slashes cannot refile the same page. Open claims are capped per licence.
+- **Accounting.** `atto_recovered` moves in `settle_breach` and nowhere else. The first version
+  credited it the moment a claim was raised, so the contract reported recovering money that nobody
+  had paid.
+
+### The validator budget is a design constraint, not an afterthought
+
+Worth writing down because it changed the implementation. Every validator repeats the whole
+non deterministic block independently, so the cost of a nondet call is multiplied by the validator
+set, not paid once.
+
+The first working version of the media gate used three browser renders per claim: a screenshot of
+the reference frame, a screenshot of the reported page, and a text render of the same page. It ran,
+and then Bradbury returned `VALIDATORS_TIMEOUT` instead of a verdict. The trace showed roughly 105
+seconds of host time for the leader alone, before the validators had even started.
+
+Two changes fixed it, and both are worth knowing:
+
+1. **The reference frame is a static image, so it does not need a browser.** It is fetched with
+   `gl.nondet.web.request` instead of `gl.nondet.web.render`, which removes an entire headless
+   browser launch from every validator's run.
+2. **Heavy calls need a bigger time allocation.** `estimateTransactionFees` accepts
+   `leaderTimeunitsAllocation` and `validatorTimeunitsAllocation`, and the default preset assumes
+   something much cheaper than a vision call. `scripts/_shared.mjs` raises it for `file_claim`,
+   `contest_claim` and `request_quote`.
+
+A timeout here looks like a broken contract and is really a transaction that was not given enough
+room. Worth checking before rewriting logic.
+
+What this still does not do: there is no cryptographic fingerprint. A vision model comparing a page
+screenshot against a reference frame is a strong filter, not a proof. The honest claim is narrower
+than "we detect infringement": griefing now costs money, needs the real footage on the page, needs a
+link to the holder, and is answerable before it bites.
+
 ---
 
 ## Contract surface
@@ -109,10 +180,12 @@ chain. That split is also what makes the incentive work: a spotter has a reason 
 
 | Method | Kind | Notes |
 | --- | --- | --- |
-| `register_asset` | write | Creator registers a clip, a prose rate card and a base price per tier |
+| `register_asset` | write | Creator registers a clip, a prose rate card, a base price per tier and the reference frame the audit compares against |
 | `request_quote` | write, **nondet** | Classifies a plain language use, prices it deterministically |
-| `purchase` | write, payable | Issues a licence, routes the fee to the creator |
-| `file_claim` | write, **nondet** | Renders an evidence page and judges the usage it shows |
+| `purchase` | write, payable | Issues a licence. Takes the brand it runs under and the channels it runs on, which is what later makes a claim answerable |
+| `file_claim` | write, payable, **nondet** | Bonded. Runs the media, identity and scope gates and opens a response window if all three pass |
+| `contest_claim` | write, **nondet** | Holder answers an open claim with their own evidence |
+| `finalize_claim` | write | After an unanswered window, turns an open claim into a breach |
 | `settle_breach` | write, payable | Holder pays the assessed shortfall, licence returns to active |
 | `get_meta`, `list_assets`, `get_asset`, `quote_preview`, `list_quotes`, `get_quote`, `list_licences`, `list_claims` | view | All return JSON strings so the front end never has to guess at calldata shapes |
 
@@ -172,7 +245,26 @@ Stop the dev server before running `npm run build`. Both write to `.next`, and r
 the same time leaves the dev server serving 404s for its own chunks. If that happens, delete
 `.next` and restart.
 
-### 5. Optional end to end check
+### 5. Tests
+
+Offline, instant, no chain. Covers URL normalisation, prefix matching and the order the audit gates
+run in:
+
+```bash
+npm run test:gates
+```
+
+Against the deployed contract. Files the actual attack from three fixtures under `public/fixtures/`
+and checks that none of them can produce a breach:
+
+```bash
+npm run adversarial
+```
+
+The adversarial run needs the fixtures reachable, so it points at the deployed front end by default.
+Override with `APP_ORIGIN` to run it against a preview deployment.
+
+### 6. Optional end to end check
 
 ```bash
 npm run seed
@@ -193,7 +285,7 @@ The app is a stock Next.js 15 App Router project with no server side secrets, so
 
    | Key | Value |
    | --- | --- |
-   | `NEXT_PUBLIC_CONTRACT_ADDRESS` | `0xb523dCaCd5b83c7d674973f63743618Ff8312529` |
+   | `NEXT_PUBLIC_CONTRACT_ADDRESS` | `0x11222a05DFDcD6EB68a93B4712d0D9819E890967` |
    | `NEXT_PUBLIC_GENLAYER_NETWORK` | `testnetBradbury` |
 
 3. Deploy. Build command and output directory are the Next.js defaults.
@@ -232,10 +324,16 @@ Routes:
 
 ## Known limits
 
-- Video fingerprinting is not implemented. The audit judges the **page**, using its title, credits
-  and surrounding copy. A production version would fingerprint frames off chain and pass only the
-  match candidate on chain. `gl.nondet.web.render(url, mode="screenshot")` plus
-  `gl.nondet.exec_prompt(images=[...])` is the upgrade path.
+- **The media gate is a filter, not a proof.** It compares a screenshot of the reported page against
+  the asset's reference frame with a vision model. That kills the text-only forgery, but it is not a
+  perceptual hash and it will not survive a determined re-encode or a crop. A production version
+  would fingerprint frames off chain and pass only the match candidate on chain.
+- **Attribution has a residual gap.** A page that hosts the real footage and names the holder will
+  pass the identity gate even if the holder never published it. That is why the outcome is a
+  disputed licence with a response window rather than an immediate breach, and why the reporter has
+  a bond at stake.
+- **The response window is 24 hours on testnet.** That is short for a real dispute and is set that
+  way so the lifecycle can be demonstrated in one sitting.
 - An on chain licence is strong evidence, not a court order. What it removes is the part plaintiffs
   usually lose on: contemporaneous, third party adjudicated documentation.
 - Quotes expire after 48 hours by design, so a price cannot be requested cheaply and redeemed after

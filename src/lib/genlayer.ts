@@ -88,6 +88,7 @@ export type Asset = {
   rate_card: string;
   prices: Record<string, string>;
   reference_frame_url: string;
+  media_sha256: string;
   created_at: string;
   active: boolean;
 };
@@ -162,7 +163,7 @@ export const VERDICT_COPY: Record<
     label: "No media match",
     tone: "dim",
     blurb:
-      "The registered footage is not on that page. Naming the clip is not evidence, so nothing happens to the licence and the reporter forfeits their bond.",
+      "Nothing the page serves hashes to the registered fingerprint. Naming the clip is not evidence, so nothing happens to the licence and the reporter forfeits their bond.",
   },
   UNATTRIBUTED: {
     label: "Not this holder",
