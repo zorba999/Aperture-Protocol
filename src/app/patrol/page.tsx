@@ -154,9 +154,10 @@ export default function PatrolPage() {
                       style={{ padding: "13px 14px" }}
                     />
                     <span className="label" style={{ lineHeight: 1.8, textTransform: "none" }}>
-                      The contract renders this page inside a non deterministic block, then several
-                      validators independently judge what usage it evidences. They must agree on
-                      whether the licence was exceeded before anything is written.
+                      The contract fetches this page, hashes the media it serves against the clip
+                      fingerprint, and only then asks whether the holder is named on it and what
+                      distribution the copy describes. Validators rerun all of it and have to agree
+                      on the verdict before anything is written.
                     </span>
                   </div>
 
