@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createClient, createAccount } from "genlayer-js";
@@ -61,6 +62,45 @@ export function gen(atto) {
   return (Number(BigInt(atto)) / 1e18).toLocaleString("en-US", { maximumFractionDigits: 4 });
 }
 
+/**
+ * Pull the contract's own error text out of a debug trace.
+ *
+ * GenVM hands back the message inside `return_data` as hex, so an assertion
+ * that wants to know *why* a call was rejected has to decode it.
+ */
+export function revertReason(trace) {
+  const hex = String(trace?.return_data || "").replace(/^0x/, "");
+  if (!hex) return "";
+  let text = "";
+  try {
+    text = Buffer.from(hex, "hex").toString("utf8");
+  } catch {
+    return "";
+  }
+  // Plain scanning rather than a regex. The payload is binary with the message
+  // embedded in it, and escaping a printable-ASCII class through two layers of
+  // quoting is how this quietly started swallowing its own leading bracket.
+  const printable = (ch) => ch >= " " && ch <= "~";
+  for (const tag of ["[EXPECTED]", "[EXTERNAL]", "[TRANSIENT]", "[LLM_ERROR]"]) {
+    const at = text.indexOf(tag);
+    if (at === -1) continue;
+    let end = at + tag.length;
+    while (end < text.length && printable(text[end]) && end - at < 220) end += 1;
+    return text.slice(at, end).trim();
+  }
+  let best = "";
+  let run = "";
+  for (const ch of text) {
+    if (printable(ch)) {
+      run += ch;
+      if (run.length > best.length) best = run;
+    } else {
+      run = "";
+    }
+  }
+  return best.length >= 12 ? best.trim() : "";
+}
+
 export async function settle(client, hash, label) {
   process.stdout.write(`  waiting for ${label} ${short(hash)} `);
   const spin = setInterval(() => process.stdout.write("."), 4000);
@@ -76,10 +116,15 @@ export async function settle(client, hash, label) {
     if (String(result).includes("ERROR")) {
       console.log(` failed (${result})`);
       const trace = await client.debugTraceTransaction({ hash }).catch((e) => ({ error: e.message }));
-      console.log(`  trace: ${JSON.stringify(trace).slice(0, 2500)}`);
-      const leader = receipt?.consensus_data?.leader_receipt || receipt?.consensusData?.leaderReceipt;
-      if (leader) console.log(`  leader: ${JSON.stringify(leader).slice(0, 2500)}`);
-      throw new Error(`${label} reverted`);
+      const reason = revertReason(trace);
+      if (reason) console.log(`  reason: ${reason}`);
+      else console.log(`  trace: ${JSON.stringify(trace).slice(0, 1200)}`);
+      // Carry the contract's own message, not just the label. Assertions that
+      // match on "reverted" pass for any reason at all, which is how four
+      // lifecycle guards looked green while proving nothing.
+      const error = new Error(reason ? `${label} reverted: ${reason}` : `${label} reverted`);
+      error.revertReason = reason || "";
+      throw error;
     }
     console.log(` ok`);
     return receipt;
@@ -90,29 +135,11 @@ export async function settle(client, hash, label) {
 }
 
 /**
- * Time allocation for calls that do real work inside a non-deterministic block.
- *
- * The default preset assumes something cheap. An audit loads an image, drives a
- * headless browser over the reported page and then runs a vision prompt, and
- * every validator repeats all of it. On the default budget that returned
- * VALIDATORS_TIMEOUT rather than a verdict, which looks like a broken contract
- * and is really just a transaction that was not given enough room.
+ * genlayer-js 1.1.8 exposes no time allocation on writeContract, only
+ * `leaderOnly` and `consensusMaxRotations`, so a heavy non-deterministic call
+ * cannot be given more room from the client. The work has to fit the default
+ * budget, which is why the audit uses HTTP rather than a headless browser.
  */
-export const HEAVY_METHODS = new Set(["file_claim", "contest_claim", "request_quote"]);
-
-export async function heavyFees(client) {
-  try {
-    const estimate = await client.estimateTransactionFees({
-      leaderTimeunitsAllocation: 2000n,
-      validatorTimeunitsAllocation: 4000n,
-      rotations: [0n],
-    });
-    return { distribution: estimate.distribution, feeValue: estimate.feeValue };
-  } catch (err) {
-    console.log(`  fee estimate unavailable, using defaults (${String(err.message).slice(0, 80)})`);
-    return null;
-  }
-}
 
 /**
  * The consensus contract occasionally reverts the outer EVM transaction when
@@ -120,10 +147,6 @@ export async function heavyFees(client) {
  * nonce). Retrying with a short backoff clears it.
  */
 export async function sendWrite(client, params, label, attempts = 3) {
-  if (HEAVY_METHODS.has(params.functionName) && !params.fees) {
-    const fees = await heavyFees(client);
-    if (fees) params = { ...params, fees };
-  }
   let lastError;
   for (let i = 0; i < attempts; i += 1) {
     try {
@@ -156,8 +179,31 @@ export function saveDeployment(record) {
   fs.writeFileSync(envFile, body);
 }
 
+/**
+ * What actually goes on chain.
+ *
+ * Bradbury refuses large deploy payloads, and the ceiling moves: a 51KB build
+ * of this contract deployed fine one morning and was refused with `intrinsic
+ * gas too low` the same evening, while a 3.5KB contract went through in the
+ * same minute. Comments and docstrings are pure payload, so they are stripped
+ * before deployment and kept in the repository where they are useful.
+ *
+ * The stripped artifact is regenerated here and committed, so the deployed
+ * bytes can be diffed against the readable source without trusting anything.
+ */
 export function contractSource() {
-  return fs.readFileSync(path.join(ROOT, "contracts", "aperture.py"), "utf8");
+  const source = path.join(ROOT, "contracts", "aperture.py");
+  const built = path.join(ROOT, "build", "aperture.min.py");
+  const result = spawnSync("python", [path.join(ROOT, "scripts", "minify_contract.py"), source, built], {
+    encoding: "utf8",
+  });
+  if (result.status !== 0) {
+    console.log(result.stdout || "");
+    console.log(result.stderr || "");
+    throw new Error("could not build the deployable contract");
+  }
+  process.stdout.write(result.stdout);
+  return fs.readFileSync(built, "utf8");
 }
 
 export function contractAddress() {

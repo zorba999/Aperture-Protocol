@@ -9,7 +9,7 @@ After the licence is issued, anyone can submit a URL as evidence of a usage beyo
 tier, and the contract judges it and assesses the shortfall.
 
 ```
-0x11222a05DFDcD6EB68a93B4712d0D9819E890967   Testnet Bradbury, chain 4221
+0xF0bCec327E50A67Faf4fe0Ed60DDb5a984fc2151   Testnet Bradbury, chain 4221
 ```
 
 ---
@@ -117,9 +117,16 @@ A claim now has to pass three gates, and the punitive state is no longer immedia
 
 | Gate | What it proves | How |
 | --- | --- | --- |
-| media | the registered footage is actually on the page | the contract screenshots the page and compares it against the asset's reference frame with a vision model. Two images, the documented limit |
+| media | the registered footage is actually on the page | the contract fetches the page, scrapes its `img`/`source`/`video` sources deterministically, fetches each candidate and compares SHA-256 against the fingerprint taken when the asset was registered. Not a judgment call |
 | identity | the page is the holder's to answer for | the URL sits under a prefix the holder declared at purchase, **or** the page names the holder as the advertiser |
 | scope | the usage outranks what they paid for | tier comparison, as before |
+
+The media gate is worth dwelling on because it is where the reported hole was.
+It is an exact match on bytes, not a model comparing screenshots. A page that
+carries no media fails **before a single byte is fetched and before any
+inference is spent**, which is what the text-only forgery deserves. The model
+is left with the two questions it is actually good at: is the holder named
+here, and what distribution does the copy describe.
 
 The identity gate is deliberately **deterministic wherever it can be**. Prefix matching runs in
 plain code on every validator, is path aware, and normalises the URL first, so `youtube.com/@nike`
@@ -145,27 +152,40 @@ Around that:
 
 ### The validator budget is a design constraint, not an afterthought
 
-Worth writing down because it changed the implementation. Every validator repeats the whole
-non deterministic block independently, so the cost of a nondet call is multiplied by the validator
-set, not paid once.
+This is the finding that changed the implementation, and it was measured rather than reasoned
+about. Every validator repeats the whole non deterministic block independently, so the cost of a
+nondet call is multiplied by the validator set, not paid once.
 
-The first working version of the media gate used three browser renders per claim: a screenshot of
-the reference frame, a screenshot of the reported page, and a text render of the same page. It ran,
-and then Bradbury returned `VALIDATORS_TIMEOUT` instead of a verdict. The trace showed roughly 105
-seconds of host time for the leader alone, before the validators had even started.
+The first working media gate compared a screenshot of the reported page against a screenshot of the
+reference frame with a vision model. It ran, and then Bradbury returned `VALIDATORS_TIMEOUT`
+instead of a verdict, with roughly 105 seconds of host time for the leader alone.
 
-Two changes fixed it, and both are worth knowing:
+`contracts/probe.py` and `scripts/probe.mjs` are the throwaway harness written to find out why.
+One method per primitive, so the answer could not be ambiguous:
 
-1. **The reference frame is a static image, so it does not need a browser.** It is fetched with
-   `gl.nondet.web.request` instead of `gl.nondet.web.render`, which removes an entire headless
-   browser launch from every validator's run.
-2. **Heavy calls need a bigger time allocation.** `estimateTransactionFees` accepts
-   `leaderTimeunitsAllocation` and `validatorTimeunitsAllocation`, and the default preset assumes
-   something much cheaper than a vision call. `scripts/_shared.mjs` raises it for `file_claim`,
-   `contest_claim` and `request_quote`.
+| Primitive | Result |
+| --- | --- |
+| `gl.nondet.web.request` (HTTP GET) | whole transaction settled in **12s** |
+| `gl.nondet.web.render` mode `text` | still unsettled at **355s** |
+| `gl.nondet.web.render` mode `screenshot` | still unsettled at **424s** |
 
-A timeout here looks like a broken contract and is really a transaction that was not given enough
-room. Worth checking before rewriting logic.
+The headless browser is the expensive part, not the model. And genlayer-js 1.1.8 exposes no time
+allocation on `writeContract` (only `leaderOnly` and `consensusMaxRotations`), so the budget cannot
+be raised from the client. The work has to fit.
+
+So the audit was rebuilt with no browser anywhere: fetch the page as served, scrape media sources
+deterministically, fetch and hash the candidates, and spend the one model call on reading the page
+copy. That is both cheaper and stronger than what it replaced.
+
+Two smaller things learned the same way, both encoded in `scripts/`:
+
+- **Deploy payload size matters and the ceiling moves.** A 51KB build deployed in the morning and
+  was refused with `intrinsic gas too low` the same evening while a 3.5KB contract went through in
+  the same minute. `scripts/minify_contract.py` strips comments and docstrings before deploying and
+  commits the artifact to `build/` so it can be diffed against the source.
+- **`ACCEPTED` is a consensus milestone, not an indexing one.** Reading contract state immediately
+  after a receipt lands returns nothing, which looks exactly like a failed write. Deploy and every
+  script poll until the state is actually readable.
 
 What this still does not do: there is no cryptographic fingerprint. A vision model comparing a page
 screenshot against a reference frame is a strong filter, not a proof. The honest claim is narrower
@@ -285,7 +305,7 @@ The app is a stock Next.js 15 App Router project with no server side secrets, so
 
    | Key | Value |
    | --- | --- |
-   | `NEXT_PUBLIC_CONTRACT_ADDRESS` | `0x11222a05DFDcD6EB68a93B4712d0D9819E890967` |
+   | `NEXT_PUBLIC_CONTRACT_ADDRESS` | `0xF0bCec327E50A67Faf4fe0Ed60DDb5a984fc2151` |
    | `NEXT_PUBLIC_GENLAYER_NETWORK` | `testnetBradbury` |
 
 3. Deploy. Build command and output directory are the Next.js defaults.
@@ -324,10 +344,13 @@ Routes:
 
 ## Known limits
 
-- **The media gate is a filter, not a proof.** It compares a screenshot of the reported page against
-  the asset's reference frame with a vision model. That kills the text-only forgery, but it is not a
-  perceptual hash and it will not survive a determined re-encode or a crop. A production version
-  would fingerprint frames off chain and pass only the match candidate on chain.
+- **The media fingerprint is byte exact.** It cannot be argued with, and it also cannot see a
+  re-encode, a crop or a resize. An infringer who re-exports the frame defeats it. Perceptual
+  hashing is the upgrade path; exact hashing is what fits the validator budget today and it is
+  enough to close the reported hole.
+- **Only HTML that is served is read.** A page that injects its media through JavaScript exposes no
+  `img` source to scrape, so it reads as no media. Out of scope for now, and stated rather than
+  hidden.
 - **Attribution has a residual gap.** A page that hosts the real footage and names the holder will
   pass the identity gate even if the holder never published it. That is why the outcome is a
   disputed licence with a response window rather than an immediate breach, and why the reporter has

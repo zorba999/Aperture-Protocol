@@ -53,9 +53,15 @@ async function expectRevert(name, params, expect) {
     await sendWrite(client, { value: 0n, ...params }, name, 1);
     record(name, false, "the call was accepted, it should have been rejected");
   } catch (err) {
-    const message = String(err.message || "");
-    const matched = !expect || message.toLowerCase().includes(expect.toLowerCase());
-    record(name, matched, matched ? "rejected as expected" : `rejected, but for: ${message.slice(0, 160)}`);
+    // Match against the contract's own message, never the label, or the check
+    // passes whenever anything at all goes wrong.
+    const reason = String(err.revertReason || err.message || "");
+    const matched = !expect || reason.toLowerCase().includes(expect.toLowerCase());
+    record(
+      name,
+      matched,
+      matched ? `rejected: ${reason.slice(0, 110)}` : `wrong reason: ${reason.slice(0, 140)}`,
+    );
   }
 }
 
@@ -147,8 +153,18 @@ await sendWrite(
   "purchase",
 );
 
-const licences = await read("list_licences", [me]);
-const licence = licences[licences.length - 1];
+// ACCEPTED is a consensus milestone, not an indexing one, so the licence is
+// not necessarily readable the instant the receipt lands.
+let licence = null;
+for (let i = 0; i < 40 && !licence; i += 1) {
+  const list = await read("list_licences", [me]);
+  if (list.length) licence = list[list.length - 1];
+  else await new Promise((r) => setTimeout(r, 3000));
+}
+if (!licence) {
+  console.log("  setup failed, the licence never became readable");
+  process.exit(1);
+}
 console.log(`    licence ${licence.id} ${licence.tier_code} as "${licence.holder_name}"`);
 console.log("");
 
@@ -177,9 +193,9 @@ await expectRevert(
 );
 
 await expectRevert(
-  "settling a licence with no upheld claim is rejected",
-  { address, functionName: "settle_breach", args: ["c00001"], value: 0n },
-  "",
+  "settling against an unknown claim is rejected",
+  { address, functionName: "settle_breach", args: ["c99999"], value: 0n },
+  "unknown claim",
 );
 
 console.log("");

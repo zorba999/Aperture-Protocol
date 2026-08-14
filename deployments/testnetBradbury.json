@@ -1,8 +1,8 @@
 {
   "network": "testnetBradbury",
   "chainId": 4221,
-  "address": "0x11222a05DFDcD6EB68a93B4712d0D9819E890967",
+  "address": "0xF0bCec327E50A67Faf4fe0Ed60DDb5a984fc2151",
   "deployer": "0x4e00Eda68DaC53c98f524CDcCfEb2DC502753B9f",
-  "txHash": "0xa964b4c63c3d6cd676f86773adfd7a03a0ab8bd0fcf479b68fb7c1bba97b0740",
-  "deployedAt": "2026-08-14T16:17:06.581Z"
+  "txHash": "0x782e8b2cd1e9ecfe542d30efbfb51e6d4abc9fef2837df779ba5384b7f1d58cc",
+  "deployedAt": "2026-08-14T20:26:21.994Z"
 }

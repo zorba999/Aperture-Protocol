@@ -14,3 +14,5 @@ next-env.d.ts
 *.tsbuildinfo
 __pycache__/
 *.pyc
+build/
+!build/aperture.min.py
