@@ -10,7 +10,9 @@
     "lint": "next lint",
     "deploy:contract": "node scripts/deploy.mjs",
     "seed": "node scripts/seed.mjs",
-    "whoami": "node scripts/whoami.mjs"
+    "whoami": "node scripts/whoami.mjs",
+    "adversarial": "node scripts/adversarial.mjs",
+    "test:gates": "python tests/test_url_gates.py"
   },
   "dependencies": {
     "genlayer-js": "^1.1.8",

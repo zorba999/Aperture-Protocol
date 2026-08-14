@@ -14,6 +14,12 @@ const c = chain();
 
 const G = (n) => (BigInt(Math.round(n * 1e6)) * 10n ** 12n).toString();
 
+// The audit fetches this to compare against a screenshot of the reported page,
+// so it has to be somewhere stable that will not rate limit the validators.
+// Override with APP_ORIGIN when seeding against a preview deployment.
+const APP_ORIGIN = (process.env.APP_ORIGIN || "https://aperture-protocol.vercel.app").replace(/\/$/, "");
+const frame = (id) => `${APP_ORIGIN}/frames/${id}.jpg`;
+
 const ASSETS = [
   {
     id: "katla-caldera",
@@ -199,6 +205,7 @@ for (const asset of ASSETS) {
         asset.duration,
         asset.rateCard,
         JSON.stringify(asset.prices),
+        frame(asset.id),
       ],
       value: 0n,
     },

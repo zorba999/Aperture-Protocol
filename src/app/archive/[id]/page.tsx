@@ -57,6 +57,10 @@ export default function AssetPage() {
   const [busy, setBusy] = useState(false);
   const [quote, setQuote] = useState<Quote | null>(null);
   const [licenceId, setLicenceId] = useState<string | null>(null);
+  // Declared at purchase, used later by the audit. Without them a claim can
+  // only ever reach this licence if the reported page names the brand itself.
+  const [holderName, setHolderName] = useState("");
+  const [prefixes, setPrefixes] = useState("");
 
   useEffect(() => {
     if (!assetId) return;
@@ -103,11 +107,12 @@ export default function AssetPage() {
 
   const onPurchase = async () => {
     if (!quote || quote.status !== "OPEN") return;
+    if (holderName.trim().length < 2) return;
     setBusy(true);
     try {
       await send({
         functionName: "purchase",
-        args: [quote.id],
+        args: [quote.id, holderName.trim(), prefixes.trim()],
         value: BigInt(quote.atto_price),
         label: "Issuing the licence",
       });
@@ -349,15 +354,59 @@ export default function AssetPage() {
                   </div>
 
                   {quote.status === "OPEN" && (
-                    <button
-                      className="btn"
-                      data-variant="solid"
-                      style={{ marginTop: 24 }}
-                      disabled={busy}
-                      onClick={onPurchase}
+                    <div
+                      style={{
+                        marginTop: 24,
+                        paddingTop: 22,
+                        borderTop: "1px solid var(--line)",
+                      }}
+                      className="stack"
                     >
-                      {busy ? "Working" : `Pay ${fromAtto(quote.atto_price)} GEN and issue licence`}
-                    </button>
+                      <span className="label">Who is this licence for</span>
+                      <p
+                        style={{
+                          margin: "8px 0 16px",
+                          fontSize: 13,
+                          lineHeight: 1.6,
+                          color: "var(--bone-40)",
+                          maxWidth: "54ch",
+                        }}
+                      >
+                        The audit later needs to know whose usage it is judging. Without this a
+                        stranger&apos;s page could be pinned on you, and with it a claim only sticks
+                        when the page is yours or names you.
+                      </p>
+
+                      <input
+                        className="field"
+                        placeholder="Brand or publisher name, e.g. Meridian Bank"
+                        value={holderName}
+                        maxLength={120}
+                        onChange={(e) => setHolderName(e.target.value)}
+                      />
+                      <textarea
+                        className="field"
+                        rows={3}
+                        style={{ marginTop: 12, resize: "vertical" }}
+                        placeholder={
+                          "Where it will run, one per line (optional)\nmeridianbank.com\nyoutube.com/@meridianbank"
+                        }
+                        value={prefixes}
+                        onChange={(e) => setPrefixes(e.target.value)}
+                      />
+
+                      <button
+                        className="btn"
+                        data-variant="solid"
+                        style={{ marginTop: 18 }}
+                        disabled={busy || holderName.trim().length < 2}
+                        onClick={onPurchase}
+                      >
+                        {busy
+                          ? "Working"
+                          : `Pay ${fromAtto(quote.atto_price)} GEN and issue licence`}
+                      </button>
+                    </div>
                   )}
 
                   {(quote.status === "CONSUMED" || licenceId) && (

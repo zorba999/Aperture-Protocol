@@ -87,6 +87,7 @@ export type Asset = {
   duration_s: number;
   rate_card: string;
   prices: Record<string, string>;
+  reference_frame_url: string;
   created_at: string;
   active: boolean;
 };
@@ -112,13 +113,24 @@ export type Licence = {
   quote_id: string;
   asset_id: string;
   holder: string;
+  holder_name: string;
+  prefixes: string[];
+  open_claims: number;
   tier_code: Tier;
   tier_label: string;
   atto_paid: string;
   scope: string;
-  status: "ACTIVE" | "BREACH";
+  status: "ACTIVE" | "DISPUTED" | "BREACH";
   issued_at: string;
 };
+
+export type Verdict =
+  | "NO_MEDIA_MATCH"
+  | "UNATTRIBUTED"
+  | "WITHIN_SCOPE"
+  | "ALLEGED_OUT_OF_SCOPE"
+  | "UPHELD_OUT_OF_SCOPE"
+  | "DISMISSED";
 
 export type Claim = {
   id: string;
@@ -126,11 +138,65 @@ export type Claim = {
   asset_id: string;
   reporter: string;
   evidence_url: string;
-  verdict: "WITHIN_SCOPE" | "OUT_OF_SCOPE" | "INCONCLUSIVE";
+  verdict: Verdict;
+  attribution: "DECLARED" | "INFERRED" | "NONE";
+  media_match: boolean;
   observed_tier: Tier;
+  observed_label: string;
   atto_shortfall: string;
+  atto_bond: string;
+  bond_state: "HELD" | "REFUNDED" | "FORFEITED" | "PAID_REPORTER" | "PAID_HOLDER";
+  window_ends: number;
   reasoning: string;
+  rebuttal_url: string;
+  rebuttal_reasoning: string;
   created_at: string;
+};
+
+/** What each verdict means for the holder, and how loudly to say it. */
+export const VERDICT_COPY: Record<
+  Verdict,
+  { label: string; tone: "acid" | "ember" | "dim"; blurb: string }
+> = {
+  NO_MEDIA_MATCH: {
+    label: "No media match",
+    tone: "dim",
+    blurb:
+      "The registered footage is not on that page. Naming the clip is not evidence, so nothing happens to the licence and the reporter forfeits their bond.",
+  },
+  UNATTRIBUTED: {
+    label: "Not this holder",
+    tone: "dim",
+    blurb:
+      "The footage is there, but the page is neither a channel the holder declared nor one that names them. It may be real infringement by somebody else. The bond is returned.",
+  },
+  WITHIN_SCOPE: {
+    label: "Within scope",
+    tone: "acid",
+    blurb: "The usage sits inside the tier the holder paid for. The bond is returned.",
+  },
+  ALLEGED_OUT_OF_SCOPE: {
+    label: "Open, awaiting the holder",
+    tone: "ember",
+    blurb:
+      "All three gates passed. The licence is disputed, not breached, and the holder has a response window to answer with evidence.",
+  },
+  UPHELD_OUT_OF_SCOPE: {
+    label: "Upheld, licence in breach",
+    tone: "ember",
+    blurb: "The response window closed unanswered. The shortfall is now payable.",
+  },
+  DISMISSED: {
+    label: "Dismissed",
+    tone: "acid",
+    blurb: "The holder rebutted the claim. The licence is active again and the bond goes to them.",
+  },
+};
+
+export const ATTRIBUTION_COPY: Record<string, string> = {
+  DECLARED: "URL sits under a channel the holder registered at purchase",
+  INFERRED: "page names the holder as the advertiser",
+  NONE: "nothing ties this page to the holder",
 };
 
 export type Meta = {
@@ -143,6 +209,9 @@ export type Meta = {
   atto_settled: string;
   atto_recovered: string;
   quote_ttl_s: number;
+  min_bond: string;
+  claim_window_s: number;
+  max_open_claims: number;
   tiers: { code: Tier; label: string; rank: number }[];
   modifiers: { code: string; uplift_pct: number }[];
 };

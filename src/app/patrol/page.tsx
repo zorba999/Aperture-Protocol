@@ -12,20 +12,21 @@ import {
   timeAgo,
   addressUrl,
   TIER_LABEL,
+  VERDICT_COPY,
+  ATTRIBUTION_COPY,
   type Claim,
   type Licence,
+  type Meta,
 } from "@/lib/genlayer";
 
-const VERDICT_TONE: Record<string, string | undefined> = {
-  OUT_OF_SCOPE: "ember",
-  WITHIN_SCOPE: "acid",
-  INCONCLUSIVE: undefined,
-};
+/** Seconds left in a claim's response window, negative once it has run out. */
+const secondsLeft = (claim: Claim) => claim.window_ends - Math.floor(Date.now() / 1000);
 
 export default function PatrolPage() {
   const { address, send, stage, chainOk, switchChain } = useWallet();
   const [claims, setClaims] = useState<Claim[]>([]);
   const [licences, setLicences] = useState<Licence[]>([]);
+  const [meta, setMeta] = useState<Meta | null>(null);
   const [licenceId, setLicenceId] = useState("");
   const [url, setUrl] = useState("");
   const [busy, setBusy] = useState(false);
@@ -33,14 +34,17 @@ export default function PatrolPage() {
   // Settled, not all. A single failing view used to blank the whole page,
   // which made a healthy contract look empty.
   const load = useCallback(async () => {
-    const [c, l] = await Promise.allSettled([
+    const [c, l, m] = await Promise.allSettled([
       readJson<Claim[]>("list_claims"),
       readJson<Licence[]>("list_licences", [""]),
+      readJson<Meta>("get_meta"),
     ]);
     if (c.status === "fulfilled") setClaims([...c.value].reverse());
     else console.error("list_claims failed", c.reason);
     if (l.status === "fulfilled") setLicences(l.value);
     else console.error("list_licences failed", l.reason);
+    if (m.status === "fulfilled") setMeta(m.value);
+    else console.error("get_meta failed", m.reason);
   }, []);
 
   useEffect(() => {
@@ -48,24 +52,45 @@ export default function PatrolPage() {
   }, [load]);
 
   const file = async () => {
-    if (!licenceId || !url.startsWith("http")) return;
+    if (!licenceId || !url.startsWith("http") || !meta) return;
     setBusy(true);
+    const before = claims.length;
     try {
       await send({
         functionName: "file_claim",
         args: [licenceId, url.trim()],
+        // Filing costs a bond. It pays for the inference a claim spends and it
+        // is what an unfounded accusation forfeits.
+        value: BigInt(meta.min_bond),
         label: `Auditing ${licenceId}`,
       });
-      for (let i = 0; i < 10; i += 1) {
+      for (let i = 0; i < 24; i += 1) {
         await new Promise((r) => setTimeout(r, 2500));
         const fresh = await readJson<Claim[]>("list_claims");
-        if (fresh.length !== claims.length) {
-          setClaims(fresh.reverse());
+        if (fresh.length !== before) {
+          setClaims([...fresh].reverse());
           break;
         }
       }
       await load();
       setUrl("");
+    } catch {
+      /* stage carries it */
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Anyone can close an unanswered claim once the window has run out. */
+  const finalize = async (claim: Claim) => {
+    setBusy(true);
+    try {
+      await send({
+        functionName: "finalize_claim",
+        args: [claim.id],
+        label: `Finalizing ${claim.id}`,
+      });
+      await load();
     } catch {
       /* stage carries it */
     } finally {
@@ -181,12 +206,43 @@ export default function PatrolPage() {
                 <div className="spread" style={{ marginBottom: 14 }}>
                   <span className="inline" style={{ gap: 10 }}>
                     <span className="mono acid">{claim.id}</span>
-                    <span className="chip" data-tone={VERDICT_TONE[claim.verdict]}>
-                      {claim.verdict.replace(/_/g, " ")}
+                    <span
+                      className="chip"
+                      data-tone={
+                        VERDICT_COPY[claim.verdict]?.tone === "dim"
+                          ? undefined
+                          : VERDICT_COPY[claim.verdict]?.tone
+                      }
+                    >
+                      {VERDICT_COPY[claim.verdict]?.label ?? claim.verdict.replace(/_/g, " ")}
                     </span>
                   </span>
                   <span className="label">{timeAgo(claim.created_at)}</span>
                 </div>
+
+                {/* The three gates, shown as they resolved. This is the part a
+                    reviewer needs: why the claim did or did not bite. */}
+                <div className="inline" style={{ gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+                  <span className="chip" data-tone={claim.media_match ? "acid" : undefined}>
+                    media {claim.media_match ? "matched" : "not found"}
+                  </span>
+                  <span className="chip" data-tone={claim.attribution === "NONE" ? undefined : "acid"}>
+                    identity {claim.attribution.toLowerCase()}
+                  </span>
+                  <span className="chip">bond {claim.bond_state.replace(/_/g, " ").toLowerCase()}</span>
+                </div>
+
+                <p
+                  style={{
+                    margin: "0 0 14px",
+                    fontSize: 13,
+                    lineHeight: 1.6,
+                    color: "var(--bone-40)",
+                    maxWidth: "70ch",
+                  }}
+                >
+                  {VERDICT_COPY[claim.verdict]?.blurb} {ATTRIBUTION_COPY[claim.attribution]}.
+                </p>
 
                 <div className="grid12" style={{ gap: 16 }}>
                   <span className="stack" style={{ gridColumn: "span 8", gap: 8 }}>
@@ -215,14 +271,31 @@ export default function PatrolPage() {
                   <span className="stack" style={{ gridColumn: "span 4", gap: 8, textAlign: "right" }}>
                     <span className="label">observed</span>
                     <span className="mono">{TIER_LABEL[claim.observed_tier]}</span>
-                    {claim.verdict === "OUT_OF_SCOPE" && (
+                    {(claim.verdict === "ALLEGED_OUT_OF_SCOPE" ||
+                      claim.verdict === "UPHELD_OUT_OF_SCOPE") && (
                       <>
                         <span className="label" style={{ marginTop: 10 }}>
-                          shortfall
+                          {claim.verdict === "UPHELD_OUT_OF_SCOPE" ? "shortfall" : "at stake"}
                         </span>
                         <span className="display d3 ember">{fromAtto(claim.atto_shortfall)} GEN</span>
                       </>
                     )}
+                    {claim.verdict === "ALLEGED_OUT_OF_SCOPE" &&
+                      (secondsLeft(claim) > 0 ? (
+                        <span className="label" style={{ marginTop: 10 }}>
+                          holder has {Math.ceil(secondsLeft(claim) / 3600)}h to answer
+                        </span>
+                      ) : (
+                        <button
+                          className="btn"
+                          data-variant="acid"
+                          style={{ marginTop: 12 }}
+                          disabled={busy || !address}
+                          onClick={() => finalize(claim)}
+                        >
+                          {busy ? "Working" : "Close the window"}
+                        </button>
+                      ))}
                   </span>
                 </div>
               </Reveal>

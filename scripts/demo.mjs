@@ -80,7 +80,7 @@ if (purchasable) {
   console.log(`  purchasing ${purchasable.id} for ${gen(purchasable.atto_price)} GEN`);
   await sendWrite(
     client,
-    { address, functionName: "purchase", args: [purchasable.id], value: BigInt(purchasable.atto_price) },
+    { address, functionName: "purchase", args: [purchasable.id, "Meridian Bank", ""], value: BigInt(purchasable.atto_price) },
     "purchase",
   );
 
@@ -91,22 +91,7 @@ if (purchasable) {
   console.log(`    licence   ${licence.id}  ${licence.scope}`);
   console.log("");
 
-  console.log(`  filing an audit claim against ${licence.id}`);
-  await sendWrite(
-    client,
-    { address, functionName: "file_claim", args: [licence.id, "https://example.com/"], value: 0n },
-    "file_claim",
-  );
-
-  const claims = JSON.parse(
-    String(await client.readContract({ address, functionName: "list_claims", args: [] })),
-  );
-  const claim = claims[claims.length - 1];
-  console.log(`    claim     ${claim.id}`);
-  console.log(`    verdict   ${claim.verdict}`);
-  console.log(`    observed  ${claim.observed_tier}`);
-  console.log(`    shortfall ${gen(claim.atto_shortfall)} GEN`);
-  console.log(`    reasoning ${String(claim.reasoning).slice(0, 180)}`);
+  console.log("  audit paths are covered by scripts/adversarial.mjs");
 }
 
 const meta = JSON.parse(String(await client.readContract({ address, functionName: "get_meta", args: [] })));

@@ -16,6 +16,9 @@ import {
   type Claim,
 } from "@/lib/genlayer";
 
+const claimsHoursLeft = (claim: Claim) =>
+  Math.max(0, Math.ceil((claim.window_ends - Math.floor(Date.now() / 1000)) / 3600));
+
 export default function VaultPage() {
   const { address, send, stage, chainOk, switchChain } = useWallet();
   const [licences, setLicences] = useState<Licence[]>([]);
@@ -23,6 +26,7 @@ export default function VaultPage() {
   const [claims, setClaims] = useState<Claim[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [tab, setTab] = useState<"licences" | "quotes">("licences");
+  const [rebuttals, setRebuttals] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     if (!address) return;
@@ -41,10 +45,20 @@ export default function VaultPage() {
     load().catch(() => undefined);
   }, [load]);
 
+  /** The claim, if any, that has already hardened into a payable breach. */
+  const upheldFor = (licence: Licence) =>
+    claims
+      .filter((c) => c.licence_id === licence.id && c.verdict === "UPHELD_OUT_OF_SCOPE")
+      .pop() ?? null;
+
+  /** The claim, if any, still inside its response window. */
+  const openAgainst = (licence: Licence) =>
+    claims
+      .filter((c) => c.licence_id === licence.id && c.verdict === "ALLEGED_OUT_OF_SCOPE")
+      .pop() ?? null;
+
   const settle = async (licence: Licence) => {
-    const claim = claims
-      .filter((c) => c.licence_id === licence.id && c.verdict === "OUT_OF_SCOPE")
-      .pop();
+    const claim = upheldFor(licence);
     if (!claim) return;
     setBusy(licence.id);
     try {
@@ -55,6 +69,31 @@ export default function VaultPage() {
         label: `Settling ${claim.id}`,
       });
       await load();
+    } catch {
+      /* stage carries it */
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /**
+   * Answer an open claim before it hardens. This is the half the first version
+   * of the contract was missing: a holder could be put in breach by a page they
+   * had never seen and had no way to reply to.
+   */
+  const contest = async (licence: Licence) => {
+    const claim = openAgainst(licence);
+    const rebuttal = (rebuttals[licence.id] ?? "").trim();
+    if (!claim || !rebuttal.startsWith("http")) return;
+    setBusy(licence.id);
+    try {
+      await send({
+        functionName: "contest_claim",
+        args: [claim.id, rebuttal],
+        label: `Contesting ${claim.id}`,
+      });
+      await load();
+      setRebuttals((prev) => ({ ...prev, [licence.id]: "" }));
     } catch {
       /* stage carries it */
     } finally {
@@ -122,9 +161,9 @@ export default function VaultPage() {
 
               {licences.map((licence, i) => {
                 const breach = licence.status === "BREACH";
-                const claim = claims
-                  .filter((c) => c.licence_id === licence.id && c.verdict === "OUT_OF_SCOPE")
-                  .pop();
+                const disputed = licence.status === "DISPUTED";
+                const claim = upheldFor(licence);
+                const open = openAgainst(licence);
                 return (
                   <Reveal
                     key={licence.id}
@@ -145,9 +184,13 @@ export default function VaultPage() {
                     </span>
                     <span className="mono">{fromAtto(licence.atto_paid)} GEN</span>
                     <span className="stack" style={{ gap: 10, alignItems: "flex-start" }}>
-                      <span className="chip" data-tone={breach ? "ember" : "acid"}>
+                      <span
+                        className="chip"
+                        data-tone={breach ? "ember" : disputed ? undefined : "acid"}
+                      >
                         {licence.status}
                       </span>
+
                       {breach && claim && (
                         <button
                           className="btn"
@@ -157,6 +200,36 @@ export default function VaultPage() {
                         >
                           Settle {fromAtto(claim.atto_shortfall)} GEN
                         </button>
+                      )}
+
+                      {/* A claim is open against this licence and the window is
+                          still running. Answer it or it hardens into a breach. */}
+                      {open && (
+                        <span className="stack" style={{ gap: 8, width: "100%" }}>
+                          <span className="label" style={{ color: "var(--ember)" }}>
+                            {claimsHoursLeft(open)}h to answer {open.id}
+                          </span>
+                          <input
+                            className="field"
+                            style={{ padding: "9px 11px", fontSize: 12 }}
+                            placeholder="Rebuttal url"
+                            value={rebuttals[licence.id] ?? ""}
+                            onChange={(e) =>
+                              setRebuttals((prev) => ({ ...prev, [licence.id]: e.target.value }))
+                            }
+                          />
+                          <button
+                            className="btn"
+                            disabled={
+                              busy === licence.id ||
+                              !(rebuttals[licence.id] ?? "").trim().startsWith("http")
+                            }
+                            onClick={() => contest(licence)}
+                            style={{ padding: "9px 14px" }}
+                          >
+                            {busy === licence.id ? "Working" : "Contest"}
+                          </button>
+                        </span>
                       )}
                     </span>
                   </Reveal>
